@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))  # permite correrlo como `python tests/test_prompts.py`
 sys.path.insert(0, str(ROOT / "evals"))
 
-from runner import brier  # noqa: E402
+from runner import brier, count_sentences  # noqa: E402
 from src.guardrails import check_output  # noqa: E402
 from src.prompts import available_versions, load_prompt  # noqa: E402
 
@@ -56,6 +56,13 @@ def test_brier_ignora_errores_y_bloqueos():
             {"confidence": None, "correct": False, "error": "Se agotaron los 3 intentos"}]
     assert brier(rows) == round((0.9 - 1) ** 2, 4)
     assert brier([{"confidence": None, "correct": False, "error": "x"}]) is None
+
+
+def test_contar_oraciones():
+    assert count_sentences("Hola. ¿Cómo estás? Bien!") == 3
+    assert count_sentences("Una sola oración.") == 1
+    assert count_sentences("Sin punto final") == 1
+    assert count_sentences("   ") == 0
 
 
 def main() -> int:

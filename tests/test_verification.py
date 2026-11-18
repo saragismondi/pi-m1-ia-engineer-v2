@@ -104,6 +104,47 @@ def test_sin_operacion_sensible_no_cambia_nada():
     assert result.response.actions == ["Revisar la solicitud."]
 
 
+# --- Máximo 3 oraciones (mejora 2, 17/11/2026) ---------------------------------
+
+class RecordingProvider(FakeProvider):
+    """Como FakeProvider, pero guarda el system prompt que recibe."""
+
+    def __init__(self):
+        self.systems = []
+
+    def complete(self, system, user, schema=None):
+        self.systems.append(system)
+        return super().complete(system, user, schema)
+
+
+def _systems_for(query):
+    recorder = RecordingProvider()
+    original = service.get_provider
+    service.get_provider = lambda name: recorder
+    saved = os.environ.get("METRICS_PATH")
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["METRICS_PATH"] = str(Path(d) / "m.jsonl")
+        try:
+            service.triage(query, "fake", use_cache=False, moderation="off")
+        finally:
+            service.get_provider = original
+            if saved is None:
+                os.environ.pop("METRICS_PATH", None)
+            else:
+                os.environ["METRICS_PATH"] = saved
+    return recorder.systems
+
+
+def test_con_verificacion_se_piden_2_oraciones():
+    systems = _systems_for(M3)  # nivel 2
+    assert len(systems) == 1 and systems[0].endswith(service.SHORT_ANSWER_INSTRUCTION)
+
+
+def test_sin_verificacion_el_prompt_no_cambia():
+    systems = _systems_for("¿Cómo exporto el libro de ventas?")
+    assert service.SHORT_ANSWER_INSTRUCTION not in systems[0]
+
+
 def main() -> int:
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
     failed = 0

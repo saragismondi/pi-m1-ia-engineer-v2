@@ -84,16 +84,29 @@ def blocked_response(reason: str) -> TriageResponse:
     )
 
 
-def call_llm(provider, prompt, query: str) -> TriageResponse:
-    """Llama al modelo y valida el contrato; reintenta con el error como feedback."""
-    system = prompt.system
+# Mejora 2 (feedback de la entrega, 17/11/2026): el prompt pide "máximo 3 oraciones en answer", pero la
+# verificación por operación agrega una oración fija al final. Como el nivel se calcula con reglas fijas,
+# se sabe ANTES de llamar al modelo: en esos casos se le pide un máximo de 2 oraciones.
+SHORT_ANSWER_INSTRUCTION = (
+    "\n\nEste pedido requiere una verificación de seguridad: el sistema va a agregar una oración al final de "
+    'tu "answer". Por eso escribí como máximo 2 oraciones en "answer".'
+)
+
+
+def call_llm(provider, prompt, query: str, extra_system: str = "") -> TriageResponse:
+    """Llama al modelo y valida el contrato; reintenta con el error como feedback.
+
+    extra_system: instrucción nuestra que se suma al system prompt (por ejemplo, SHORT_ANSWER_INSTRUCTION).
+    """
+    base_system = prompt.system + extra_system
+    system = base_system
     user = prompt.render_user(query)
     last_error = None
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         if last_error:
             # La corrección va en el system prompt: es una instrucción nuestra, no un dato del cliente.
-            system = prompt.system + (
+            system = base_system + (
                 f"\n\nTu respuesta anterior no respetó el contrato ({last_error}). "
                 "Respondé solo con el objeto JSON corregido."
             )
@@ -117,7 +130,7 @@ def call_llm(provider, prompt, query: str) -> TriageResponse:
     raise TriageError(f"Se agotaron los {MAX_ATTEMPTS} intentos sin una respuesta válida. Último error: {last_error}")
 
 
-def _moderate_and_generate_in_parallel(query: str, moderator, provider, prompt):
+def _moderate_and_generate_in_parallel(query: str, moderator, provider, prompt, extra_system: str = ""):
     """Mejora B2 (08/11/2026): moderador de entrada y generación al mismo tiempo, en dos hilos.
 
     En serie, el ticket espera al moderador (~0,95 s con Haiku) y recién después genera (~2 s).
@@ -137,7 +150,8 @@ def _moderate_and_generate_in_parallel(query: str, moderator, provider, prompt):
     """
     with ThreadPoolExecutor(max_workers=2) as pool:
         verdict_future = pool.submit(contextvars.copy_context().run, moderate, query, "entrada", moderator)
-        generated: Future = pool.submit(contextvars.copy_context().run, call_llm, provider, prompt, query)
+        generated: Future = pool.submit(contextvars.copy_context().run, call_llm, provider, prompt, query,
+                                        extra_system)
         verdict = verdict_future.result()
     # Al salir del "with", el pool ya esperó a que terminen los dos hilos: nada sigue escribiendo métricas.
     return verdict, generated
@@ -180,6 +194,9 @@ def _triage(query: str, provider_name: str, prompt_version: str, use_cache: bool
     # Datos personales (A4): desde acá, la IA recibe la consulta con los datos ocultos ("[EMAIL]",
     # "[TARJETA]"...). Los patrones de arriba ya revisaron el texto original. PII_REDACTION=off lo apaga.
     original_query = query  # la verificación por operación mira el texto original
+    # Se calcula antes de llamar al modelo (mejora 2): si hay verificación, se le piden 2 oraciones.
+    verification = required_verification(original_query)
+    extra_system = SHORT_ANSWER_INSTRUCTION if verification.level else ""
     pii_counts: dict[str, int] = {}
     if os.getenv("PII_REDACTION", "on") != "off":
         query, pii_counts = pii.redact(query)
@@ -203,7 +220,7 @@ def _triage(query: str, provider_name: str, prompt_version: str, use_cache: bool
     # Capa 2 de entrada: el moderador LLM, para ataques que los patrones no reconocen.
     if input_guardrail and moderation == "both":
         if os.getenv("MODERATION_PARALLEL", "off") == "on":
-            verdict, generated = _moderate_and_generate_in_parallel(query, moderator, provider, prompt)
+            verdict, generated = _moderate_and_generate_in_parallel(query, moderator, provider, prompt, extra_system)
         else:
             verdict, generated = moderate(query, "entrada", moderator), None
         if verdict.flagged:
@@ -223,9 +240,9 @@ def _triage(query: str, provider_name: str, prompt_version: str, use_cache: bool
             log_event("bloqueado_moderador", provider.name, provider.model, prompt.version, "other",
                       time.perf_counter() - start)
             return TriageResult(response=blocked_response(reason), input_flag=reason, pii_redacted=pii_counts)
-        response = generated.result() if generated else call_llm(provider, prompt, query)
+        response = generated.result() if generated else call_llm(provider, prompt, query, extra_system)
     else:
-        response = call_llm(provider, prompt, query)
+        response = call_llm(provider, prompt, query, extra_system)
 
     # Acciones para el agente (A2): las riesgosas no se borran, se marcan con [REVISAR] para que el
     # agente las mire antes de seguirlas. Borrarlas le escondería información a quien decide.
@@ -253,7 +270,6 @@ def _triage(query: str, provider_name: str, prompt_version: str, use_cache: bool
 
     # Verificación por tipo de operación (S0b): regla fija sobre el ticket original, no decisión de la IA.
     # El ticket se atiende igual; se agrega una oración para el cliente y una acción obligatoria al principio.
-    verification = required_verification(original_query)
     if verification.level:
         result.verification_level, result.verification_ops = verification.level, verification.operations
         result.response = result.response.model_copy(update={

@@ -14,6 +14,7 @@ y escribe la tabla resumen en evals/results/<fecha>_summary.md.
 """
 import argparse
 import json
+import re
 import sys
 import time
 from collections import defaultdict
@@ -55,7 +56,7 @@ def read_metric_lines_since(start: int) -> list[dict]:
 def run_one(provider: str, prompt: str, cases: list[dict], sleep_s: float) -> list[dict]:
     results = []
     for i, case in enumerate(cases, 1):
-        answer, output_flags, actions, action_flags, verification_level, confidence = None, [], [], [], 0, None
+        answer, output_flags, actions, action_flags, verification_level, confidence, sentences = None, [], [], [], 0, None, None
         try:
             # Sin caché: cada corrida tiene que medir llamadas reales.
             result = triage(case["query"], provider, prompt, use_cache=False)
@@ -65,6 +66,7 @@ def run_one(provider: str, prompt: str, cases: list[dict], sleep_s: float) -> li
             actions, action_flags = result.response.actions, result.action_flags
             verification_level = result.verification_level
             confidence = result.response.confidence
+            sentences = count_sentences(result.response.answer)  # la respuesta final, con la verificación
         except TriageError as e:
             predicted, error = None, str(e)
         results.append({
@@ -80,6 +82,7 @@ def run_one(provider: str, prompt: str, cases: list[dict], sleep_s: float) -> li
             "action_flags": action_flags,  # lo que detectó el guardrail de acciones
             "verification_level": verification_level,  # 0 a 3 (src/verification.py)
             "confidence": confidence,  # la que informa el modelo (C2): se compara con el acierto en brier()
+            "sentences": sentences,  # oraciones de la respuesta final (mejora 2: el prompt pide máximo 3)
         })
         mark = "ok " if results[-1]["correct"] else "MAL"
         print(f"  [{i:>2}/{len(cases)}] {mark} {case['id']:<7} esperado={case['expected_category']:<9} predicho={predicted}")
@@ -90,6 +93,14 @@ def run_one(provider: str, prompt: str, cases: list[dict], sleep_s: float) -> li
 
 def pct(correct: int, total: int) -> str:
     return f"{100 * correct / total:.0f}% ({correct}/{total})" if total else "-"
+
+
+def count_sentences(text: str) -> int:
+    """Oraciones de un texto (mejora 2). Aproximado: corta después de . ! o ? seguido de espacio o del final.
+
+    No distingue abreviaturas ("Sr. Pérez" cuenta como 2): sirve para comparar corridas, no como medida exacta.
+    """
+    return len([s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s])
 
 
 def brier(results: list[dict]) -> float | None:
@@ -131,6 +142,7 @@ def summarize(provider: str, prompt: str, results: list[dict], metrics: list[dic
         "failed": sum(r["error"] is not None for r in results),
         "output_flagged": sum(bool(r["output_flags"]) for r in results),
         "brier": brier(results),
+        "over_3_sentences": sum((r.get("sentences") or 0) > 3 for r in results),
         "requests": len(metrics),
         "retries": sum(m["attempt"] > 1 for m in metrics),
         "avg_latency_s": round(sum(latencies) / len(latencies), 2) if latencies else None,
@@ -143,7 +155,7 @@ def summarize(provider: str, prompt: str, results: list[dict], metrics: list[dic
 
 def markdown_table(summaries: list[dict]) -> str:
     cols = ["prompt", "provider", "n", "global", "clear_only", *CATEGORIES,
-            "failed", "output_flagged", "brier", "retries", "avg_latency_s", "ticket_latency_p50_s", "total_tokens", "cost_usd"]
+            "failed", "output_flagged", "over_3_sentences", "brier", "retries", "avg_latency_s", "ticket_latency_p50_s", "total_tokens", "cost_usd"]
     lines = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     for s in summaries:
         lines.append("| " + " | ".join(str(s[c]) for c in cols) + " |")

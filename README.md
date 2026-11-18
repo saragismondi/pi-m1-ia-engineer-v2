@@ -305,6 +305,12 @@ cliente al final de `answer` y una acción obligatoria al principio de `actions`
 Los niveles son una decisión de negocio (Sara, 08/11/2026). El servicio no sabe quién escribió el ticket:
 no envía el código, lo exige.
 
+**Máximo 3 oraciones también con verificación (17/11/2026).** El prompt pide "máximo 3 oraciones en answer",
+y la oración de verificación sumaba una cuarta. Como el nivel se calcula con reglas fijas, se sabe antes de
+llamar al modelo: en esos casos se le pide un máximo de 2 oraciones. Medido con gpt-4o-mini en los 40 casos:
+las respuestas con verificación que pasaban de 3 oraciones bajaron de 6 de 9 a **0 de 9**. El runner reporta
+`over_3_sentences` (conteo aproximado por puntuación).
+
 Qué pasa cuando algo se detecta:
 - **Entrada:** no se llama al modelo. Se devuelve una respuesta segura y el ticket se deriva a revisión humana.
 - **Salida:** el `answer` se reemplaza por uno seguro y se agrega una acción para que el agente redacte la respuesta.

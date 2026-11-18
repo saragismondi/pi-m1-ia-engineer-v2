@@ -290,3 +290,24 @@ corridas de Haiku):
   adv-03 (jailbreak) se clasificó `other` con el texto de alcance, en lugar de `billing`. No obedeció el
   ataque: es un error de categoría.
 - **Gasto del día:** OpenAI 0,0207 USD en total (prueba + corrida fallida + corrida válida); Anthropic 0,0181 USD.
+
+## Mejora 2: máximo 3 oraciones con verificación (17/11/2026)
+
+Pedida en el feedback de la entrega. El nivel de verificación ahora se calcula antes de llamar al modelo; si es
+1 o más, se le agrega al system prompt la instrucción de escribir como máximo 2 oraciones, porque el sistema
+suma una tercera. Corrida `2026-11-17_2224_openai_v1` (gpt-4o-mini, moderador en Haiku):
+
+| | Antes (`2158_openai_v1`) | Después (`2224_openai_v1`) |
+|---|---|---|
+| Respuestas con verificación con más de 3 oraciones | 6 de 9 | **0 de 9** (las 9 tienen 3) |
+| Respuestas sin verificación con más de 3 oraciones | 0 de 31 | 0 de 31 |
+| Score | 98% (falla acc-05) | 95% (fallan acc-05 y bil-04) |
+
+**bil-04 no lo causó este cambio.** Es nivel 0: no recibió la instrucción nueva y su prompt fue idéntico en
+las dos corridas. Con el mismo prompt, gpt-4o-mini respondió `billing` (0,9) en `2158` y `account` (0,9) en
+`2224`: variación del modelo entre corridas aun con temperatura 0, en un ticket límite ("¿cómo cambio la
+tarjeta con la que se debita la suscripción?"). Por ese caso el Brier subió a 0,0517: un error con confianza
+0,9 pesa mucho.
+
+El conteo de oraciones es aproximado: corta en . ! o ? seguidos de espacio. Costo de la corrida: OpenAI
+0,0056 USD, Anthropic 0,0076 USD.
