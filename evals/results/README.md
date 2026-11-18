@@ -311,3 +311,36 @@ tarjeta con la que se debita la suscripción?"). Por ese caso el Brier subió a 
 
 El conteo de oraciones es aproximado: corta en . ! o ? seguidos de espacio. Costo de la corrida: OpenAI
 0,0056 USD, Anthropic 0,0076 USD.
+
+## Mejora 4: pre-chequeo antes del moderador en paralelo (18/11/2026)
+
+Pedida en el feedback de la entrega: un pre-chequeo rápido y, solo si el riesgo es bajo, generar en paralelo.
+`src/precheck.py` no llama a ninguna IA: busca señales de riesgo en el ticket original. Con alguna, el moderador
+de entrada corre antes de generar (serie); sin ninguna, al mismo tiempo (paralelo). Corridas con
+`MODERATION_PARALLEL=on`, gpt-4o-mini y moderador en Haiku: `2026-11-18_0945_openai_v1` (40 casos) y
+`2026-11-18_0948_adversarial_*` (20 ataques).
+
+| | Resultado |
+|---|---|
+| Tickets normales en paralelo / en serie | 30 / 10 (9 son operaciones sensibles; bil-10 por "no autoricé nada") |
+| Ataques frenados por los patrones (no llegan al pre-chequeo) | 10 de 20 |
+| Ataques que llegan al moderador, ruta | 10 de 10 en serie |
+| Ataques bloqueados por el moderador que pagaron una generación | **0 de 8** (en paralelo se pagaban todas) |
+| Ataques que llegan al cliente | 0 de 20 (igual que antes) |
+| Score / Brier | 95% (fallan bil-04 y acc-05, los mismos que en `2224`) / 0,0603 |
+| Falsas alarmas en tickets que no se usaron para ajustar | 9 de 94 candidatos de la mejora 3 en serie: 8 por operación sensible y 1 por "sos un bot" |
+
+**Latencia: no hay mejora demostrada con una sola corrida.** Mediana por ticket contra la corrida en serie `2224`:
+los 30 que fueron en paralelo bajaron de 4,52 s a 4,00 s; los 10 que fueron en serie en las dos corridas
+subieron de 4,39 s a 5,65 s sin ningún cambio de código. Esa diferencia de más de 1 s en tickets idénticos
+muestra que la variación entre corridas es mayor que la ganancia medida. La medición anterior con Haiku
+(mejora B2, −28%) tampoco se repitió varias veces.
+
+**Sesgo de la medición de ataques:** las listas de palabras de `precheck.py` se ajustaron mirando estos mismos 20
+ataques, así que "10 de 10 en serie" es optimista. Un ataque nuevo sin ninguna señal iría en paralelo; el
+moderador lo sigue revisando igual, lo que cambia es que la generación se paga y el modelo ve el texto.
+
+Observación aparte (no se cambió): `src/verification.py` toma la palabra "admin" dentro de un email
+(`admin@...`) como pedido de permisos, nivel 2.
+
+Costo de las dos corridas: OpenAI 0,0089 USD, Anthropic 0,0106 USD.

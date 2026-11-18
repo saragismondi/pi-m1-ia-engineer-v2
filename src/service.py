@@ -13,6 +13,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 
 from src import cache, pii
+from src.precheck import risk_signals
 from src.verification import AGENT_ACTION, CUSTOMER_NOTICE, required_verification
 from src.guardrails import (ACTION_REVIEW_PREFIX, OUT_OF_SCOPE_ANSWER, SAFE_ANSWER, check_actions, check_input,
                             check_output, check_scope)
@@ -46,6 +47,8 @@ class TriageResult:
     pii_redacted: dict[str, int] = field(default_factory=dict)  # datos ocultados antes de llamar a la IA
     verification_level: int = 0                                     # 0 a 3 (src/verification.py)
     verification_ops: list[str] = field(default_factory=list)       # operaciones sensibles detectadas
+    precheck_signals: list[str] = field(default_factory=list)       # mejora 4: señales que mandaron el ticket en serie
+    moderation_route: str | None = None                             # "serie" | "paralelo" (moderador de entrada)
 
 
 def parse_response(text: str) -> TriageResponse:
@@ -218,8 +221,16 @@ def _triage(query: str, provider_name: str, prompt_version: str, use_cache: bool
         return TriageResult(response=response, cached=True, pii_redacted=pii_counts)
 
     # Capa 2 de entrada: el moderador LLM, para ataques que los patrones no reconocen.
+    signals, route = [], None
     if input_guardrail and moderation == "both":
-        if os.getenv("MODERATION_PARALLEL", "off") == "on":
+        # Mejora 4 (feedback de Henry): con MODERATION_PARALLEL=on, un pre-chequeo sin IA decide.
+        # Con alguna señal de riesgo, en serie (el modelo no ve el ticket hasta que el moderador lo apruebe);
+        # sin señales, en paralelo. Mira el ticket original, antes de ocultar los datos personales.
+        parallel_on = os.getenv("MODERATION_PARALLEL", "off") == "on"
+        signals = risk_signals(original_query) if parallel_on else []
+        parallel = parallel_on and not signals
+        route = "paralelo" if parallel else "serie"
+        if parallel:
             verdict, generated = _moderate_and_generate_in_parallel(query, moderator, provider, prompt, extra_system)
         else:
             verdict, generated = moderate(query, "entrada", moderator), None
@@ -234,12 +245,13 @@ def _triage(query: str, provider_name: str, prompt_version: str, use_cache: bool
                 log_event("fuera_de_alcance", provider.name, provider.model, prompt.version, "other",
                           time.perf_counter() - start)
                 return TriageResult(response=out_of_scope_response(reason), input_flag=reason,
-                                    pii_redacted=pii_counts)
+                                    pii_redacted=pii_counts, precheck_signals=signals, moderation_route=route)
             # La llamada al moderador ya quedó registrada (con sus tokens); esta línea registra
             # que la ejecución terminó bloqueada. En modo paralelo la respuesta generada se descarta.
             log_event("bloqueado_moderador", provider.name, provider.model, prompt.version, "other",
                       time.perf_counter() - start)
-            return TriageResult(response=blocked_response(reason), input_flag=reason, pii_redacted=pii_counts)
+            return TriageResult(response=blocked_response(reason), input_flag=reason, pii_redacted=pii_counts,
+                                precheck_signals=signals, moderation_route=route)
         response = generated.result() if generated else call_llm(provider, prompt, query, extra_system)
     else:
         response = call_llm(provider, prompt, query, extra_system)
@@ -254,7 +266,8 @@ def _triage(query: str, provider_name: str, prompt_version: str, use_cache: bool
             for a, f in zip(response.actions, per_action)
         ]})
 
-    result = TriageResult(response=response, action_flags=action_flags, pii_redacted=pii_counts)
+    result = TriageResult(response=response, action_flags=action_flags, pii_redacted=pii_counts,
+                          precheck_signals=signals, moderation_route=route)
     flags = check_output(response.answer, prompt.system)
     # Capa 2 de salida: si los patrones no vieron nada, el moderador busca paráfrasis.
     if not flags and moderation in ("output", "both"):

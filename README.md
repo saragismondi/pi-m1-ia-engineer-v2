@@ -67,7 +67,7 @@ Variables principales (todas documentadas en `.env.example`):
 | `MODERATION` | `both` | Moderador LLM: `off`, `output` (solo la respuesta) o `both` (ticket y respuesta). |
 | `MODERATION_THRESHOLD` | `0.5` | Puntaje de riesgo (0 a 1) desde el cual el moderador marca. |
 | `MODERATOR_PROVIDER` | `anthropic` | Proveedor del moderador. |
-| `MODERATION_PARALLEL` | `off` | `on` corre el moderador de entrada y la generación al mismo tiempo (ver *Decisiones*). |
+| `MODERATION_PARALLEL` | `off` | `on`: un pre-chequeo sin IA decide; sin señales de riesgo, el moderador de entrada y la generación corren al mismo tiempo; con alguna señal, en serie (ver *Decisiones*). |
 | `PII_REDACTION` | `on` | Oculta datos personales antes de llamar a la IA. `off` lo apaga. |
 
 ## Uso
@@ -156,9 +156,11 @@ consulta
 | `tests/test_service.py` | Tests del parseo del JSON y los reintentos, sin LLM. |
 | `src/pii.py` | Oculta datos personales antes de llamar a la IA. |
 | `src/verification.py` | Niveles de verificación según la operación que pide el ticket. |
+| `src/precheck.py` | Pre-chequeo sin IA que decide si el moderador de entrada corre en paralelo o en serie. |
 | `tests/test_verification.py` | Tests de los niveles de verificación, sin LLM. |
 | `tests/test_prompts.py` | Tests del prompt v3 y del Brier score, sin LLM. |
 | `tests/test_providers.py` | Tests de los proveedores Groq y OpenAI, sin red. |
+| `tests/test_precheck.py` | Tests del pre-chequeo y de la ruta serie/paralelo, sin LLM. |
 | `.github/workflows/tests.yml` | Corre todos los tests sin LLM en cada push (GitHub Actions). |
 
 ## Context engineering: técnica elegida
@@ -437,6 +439,15 @@ $ python -m src.main "no me llega el mail para recuperar la contraseña" --provi
   ticket bajó de 4,40 s a 3,15 s (−28%), con el mismo acierto (100%) y el mismo costo. El riesgo: el modelo
   procesa el ticket antes de saber si es un ataque. Su respuesta nunca sale, pero si el moderador bloquea, la
   generación se paga igual. Por eso la decisión de prenderlo queda explícita.
+- **Pre-chequeo antes del paralelo (mejora 4, feedback de la entrega):** con `MODERATION_PARALLEL=on`,
+  `src/precheck.py` busca señales de riesgo sin llamar a ninguna IA (operación sensible, ofuscación, base64,
+  vocabulario de ataque, mensajes dirigidos a la IA, autoridad o promesas exigidas, formato raro, links,
+  textos largos). Con alguna señal, el ticket va en serie: el modelo no lo ve hasta que el moderador lo
+  aprueba. Sin señales, va en paralelo. Medido el 18/11/2026 (`evals/results/2026-11-18_0945_*` y `0948_*`):
+  30 de 40 tickets normales en paralelo; los 10 ataques que pasan los patrones, en serie, y los 8 que el
+  moderador bloqueó no pagaron ninguna generación. Límite: un ataque sin ninguna de esas señales sigue
+  yendo en paralelo, y las listas de palabras se ajustaron mirando el mismo set de ataques (detalle en
+  `evals/results/README.md`).
 - **Modo de falla seguro:** si el moderador no responde, el ticket va a revisión humana.
 - **`temperature=0` en Groq,** para que las respuestas sean estables. anthropic 2.6.0 no acepta `temperature`.
 - **Reintentos:** los errores de red y de límites los reintenta el SDK (3 veces, timeout de 30 s). Las
@@ -490,6 +501,7 @@ $ python -m src.main "no me llega el mail para recuperar la contraseña" --provi
   python tests/test_verification.py
   python tests/test_prompts.py
   python tests/test_providers.py
+  python tests/test_precheck.py
   ```
 
   Para comprobar que los tests detectan errores, se quitaron dos patrones a propósito (`cambio_de_rol`

@@ -48,6 +48,7 @@ def evaluate(case: dict, provider: str, prompt: str, input_guardrail: bool) -> d
         return row
 
     row["blocked"] = result.input_flag
+    row["moderation_route"], row["precheck_signals"] = result.moderation_route, result.precheck_signals  # mejora 4
     row["category"] = result.response.category
     row["final_answer"] = result.response.answer
     if result.input_flag:
