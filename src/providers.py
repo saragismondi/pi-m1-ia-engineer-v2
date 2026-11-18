@@ -1,4 +1,4 @@
-"""Clientes LLM: una interfaz común y dos proveedores (Anthropic y Groq).
+"""Clientes LLM: una interfaz común y tres proveedores (Anthropic, Groq y OpenAI).
 
 El resto del proyecto solo llama a `provider.complete(system, user)`.
 Cambiar de proveedor no toca la lógica de negocio: solo cambia el nombre que se pasa a get_provider().
@@ -90,37 +90,48 @@ class AnthropicProvider(LLMProvider):
         )
 
 
-class GroqProvider(LLMProvider):
-    """Groq expone una API compatible con OpenAI: usamos el SDK de openai cambiando base_url."""
-    name = "groq"
-    BASE_URL = "https://api.groq.com/openai/v1"
+class OpenAICompatibleProvider(LLMProvider):
+    """Base para APIs compatibles con OpenAI: mismo SDK (openai), cambian la URL, la clave y algunos parámetros.
 
-    def __init__(self, model: str, max_tokens: int, temperature: float, reasoning_effort: str = "low"):
+    Groq y OpenAI la usan. reasoning_effort=None no se manda: los modelos que no razonan (como gpt-4o-mini)
+    no lo necesitan.
+    """
+    name = "openai-compatible"
+    BASE_URL: str | None = None  # None = la URL por defecto del SDK (api.openai.com)
+    KEY_ENV = "OPENAI_API_KEY"
+
+    def __init__(self, model: str, max_tokens: int, temperature: float, reasoning_effort: str | None = None):
         super().__init__(model, max_tokens)
         self.temperature = temperature
         self.reasoning_effort = reasoning_effort
         self.client = openai.OpenAI(
-            api_key=_require_env("GROQ_API_KEY"),
+            api_key=_require_env(self.KEY_ENV),
             base_url=self.BASE_URL,
             max_retries=SDK_MAX_RETRIES,
             timeout=TIMEOUT_S,
         )
 
-    def complete(self, system: str, user: str, schema: dict | None = None) -> LLMResult:
-        schema = schema or output_json_schema()
-        start = time.perf_counter()
-        response = self.client.chat.completions.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            reasoning_effort=self.reasoning_effort,
-            response_format={"type": "json_schema", "json_schema": {
+    def build_request(self, system: str, user: str, schema: dict) -> dict:
+        """Parámetros de la llamada. Separado de complete() para poder testearlo sin red."""
+        request = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "response_format": {"type": "json_schema", "json_schema": {
                 "name": "respuesta", "schema": schema, "strict": True}},
-            messages=[
+            "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-        )
+        }
+        if self.reasoning_effort:
+            request["reasoning_effort"] = self.reasoning_effort
+        return request
+
+    def complete(self, system: str, user: str, schema: dict | None = None) -> LLMResult:
+        schema = schema or output_json_schema()
+        start = time.perf_counter()
+        response = self.client.chat.completions.create(**self.build_request(system, user, schema))
         latency = time.perf_counter() - start
         return LLMResult(
             text=response.choices[0].message.content or "",
@@ -133,19 +144,39 @@ class GroqProvider(LLMProvider):
         )
 
 
-PROVIDERS = ("anthropic", "groq")
+class GroqProvider(OpenAICompatibleProvider):
+    """Groq expone una API compatible con OpenAI: usamos el SDK de openai cambiando base_url."""
+    name = "groq"
+    BASE_URL = "https://api.groq.com/openai/v1"
+    KEY_ENV = "GROQ_API_KEY"
+
+
+class OpenAIProvider(OpenAICompatibleProvider):
+    """OpenAI directo (mejora pedida en el feedback de Henry, 17/11/2026). Modelo por defecto: gpt-4o-mini.
+
+    Por qué gpt-4o-mini y no gpt-5-mini o gpt-5-nano: los modelos gpt-5 razonan antes de responder, y esos
+    tokens cuentan dentro de MAX_TOKENS. Es el mismo problema que cortaba el JSON con Haiku y gpt-oss (ver
+    README, "Respuestas cortadas"). gpt-4o-mini no razona.
+    """
+    name = "openai"
+    KEY_ENV = "OPENAI_API_KEY"
+
+
+PROVIDERS = ("anthropic", "groq", "openai")
 
 
 def get_provider(name: str) -> LLMProvider:
     """Crea el proveedor pedido leyendo modelo y parámetros del entorno (.env)."""
     max_tokens = int(os.getenv("MAX_TOKENS", "500"))
+    temperature = float(os.getenv("TEMPERATURE", "0"))
     if name == "anthropic":
         return AnthropicProvider(os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5"), max_tokens,
                                  os.getenv("ANTHROPIC_THINKING", "disabled"))
     if name == "groq":
-        temperature = float(os.getenv("TEMPERATURE", "0"))
         return GroqProvider(os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"), max_tokens, temperature,
                             os.getenv("GROQ_REASONING_EFFORT", "low"))
+    if name == "openai":
+        return OpenAIProvider(os.getenv("OPENAI_MODEL", "gpt-4o-mini"), max_tokens, temperature)
     raise ValueError(f"Proveedor desconocido: {name!r}. Opciones: {', '.join(PROVIDERS)}")
 
 

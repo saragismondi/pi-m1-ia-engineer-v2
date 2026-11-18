@@ -157,6 +157,7 @@ consulta
 | `src/verification.py` | Niveles de verificación según la operación que pide el ticket. |
 | `tests/test_verification.py` | Tests de los niveles de verificación, sin LLM. |
 | `tests/test_prompts.py` | Tests del prompt v3 y del Brier score, sin LLM. |
+| `tests/test_providers.py` | Tests de los proveedores Groq y OpenAI, sin red. |
 | `.github/workflows/tests.yml` | Corre todos los tests sin LLM en cada push (GitHub Actions). |
 
 ## Context engineering: técnica elegida
@@ -458,6 +459,7 @@ $ python -m src.main "no me llega el mail para recuperar la contraseña" --provi
   python tests/test_service.py
   python tests/test_verification.py
   python tests/test_prompts.py
+  python tests/test_providers.py
   ```
 
   Para comprobar que los tests detectan errores, se quitaron dos patrones a propósito (`cambio_de_rol`

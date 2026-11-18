@@ -31,3 +31,4 @@ jobs:
           python tests/test_service.py
           python tests/test_verification.py
           python tests/test_prompts.py
+          python tests/test_providers.py

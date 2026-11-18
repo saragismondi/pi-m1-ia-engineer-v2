@@ -25,6 +25,9 @@ PRICES_PER_MTOK = {
     "claude-haiku-5-5": (0.10, 0.50),
     "openai/gpt-oss-20b": (0.0, 0.0),
     "openai/gpt-oss-120b": (0.0, 0.0),  # en uso desde el 07/11/2026: el cupo diario de 20b se agotó en los evals
+    # OpenAI: developers.openai.com/api/docs/pricing, consultado el 17/11/2026, tabla Standard:
+    # gpt-4o-mini $0.15 entrada, $0.60 salida por 1M tokens.
+    "gpt-4o-mini": (0.15, 0.60),
 }
 
 
