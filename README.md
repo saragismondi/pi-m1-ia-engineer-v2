@@ -51,6 +51,7 @@ Completar en `.env` las claves:
 
 - `ANTHROPIC_API_KEY`: console.anthropic.com. Requiere créditos prepagos.
 - `GROQ_API_KEY`: console.groq.com. Tiene plan gratuito con límites diarios.
+- `OPENAI_API_KEY`: platform.openai.com. Requiere créditos prepagos (conviene poner un límite de gasto).
 
 Con la configuración por defecto se necesitan **las dos claves**: Groq genera la respuesta y Haiku
 (Anthropic) modera. Para usar solo Groq, poné `MODERATOR_PROVIDER=groq` o `MODERATION=off`.
@@ -59,8 +60,8 @@ Variables principales (todas documentadas en `.env.example`):
 
 | Variable | Por defecto | Para qué |
 |---|---|---|
-| `DEFAULT_PROVIDER` | `groq` | Proveedor que responde: `anthropic` o `groq`. |
-| `ANTHROPIC_MODEL` / `GROQ_MODEL` | `claude-haiku-5-5` / `openai/gpt-oss-120b` | Modelo de cada proveedor. |
+| `DEFAULT_PROVIDER` | `groq` | Proveedor que responde: `anthropic`, `groq` u `openai`. |
+| `ANTHROPIC_MODEL` / `GROQ_MODEL` / `OPENAI_MODEL` | `claude-haiku-5-5` / `openai/gpt-oss-120b` / `gpt-4o-mini` | Modelo de cada proveedor. |
 | `MAX_TOKENS` | `500` | Tope de tokens de salida. |
 | `ANTHROPIC_THINKING` / `GROQ_REASONING_EFFORT` | `disabled` / `low` | Cuánto "razona" el modelo antes de responder (ver *Decisiones*). |
 | `MODERATION` | `both` | Moderador LLM: `off`, `output` (solo la respuesta) o `both` (ticket y respuesta). |
@@ -79,7 +80,7 @@ python -m src.main "no puedo entrar" --no-cache --moderation off
 
 Opciones:
 
-- `--provider`: `anthropic` o `groq`.
+- `--provider`: `anthropic`, `groq` u `openai`.
 - `--prompt`: `v1` o `v2`. Por defecto `v1`.
 - `--no-cache`: siempre llama al LLM.
 - `--moderation`: `off`, `output` o `both`.
@@ -226,8 +227,28 @@ Cada corrida guarda el detalle por caso y una tabla en `evals/results/`.
 | v2 | Anthropic / claude-haiku-5-5 | 40 | 98% | 100% | 100% | 100% | 90% | 100% | 0 | 0 |
 | v1 | Groq / openai/gpt-oss-120b | 40 | 98% | 100% | 100% | 100% | 100% | 90% | 0 | 0 |
 | v2 | Groq / openai/gpt-oss-120b | 40 | 98% | 100% | 100% | 100% | 100% | 90% | 0 | 0 |
+| v1 | **OpenAI / gpt-4o-mini** | 40 | 98% | 100% | 100% | 100% | 90% | 100% | 0 | 0 |
+| v2 | **OpenAI / gpt-4o-mini** | 40 | 98% | 100% | 100% | 100% | 90% | 100% | 0 | 0 |
 
-Fuentes: `evals/results/2026-11-07_1739_*` (Anthropic), `2026-11-07_1940_*` y `2026-11-07_1942_*` (Groq).
+Fuentes: `evals/results/2026-11-07_1739_*` (Anthropic), `2026-11-07_1940_*` y `2026-11-07_1942_*` (Groq),
+`2026-11-17_2158_*` (OpenAI, con el moderador en Haiku).
+
+**Comparativa Haiku contra gpt-4o-mini con el código actual** (prompt v1, mismos 40 casos, moderador en Haiku
+en los dos; `2026-11-08_0159_anthropic_v1` y `2026-11-17_2158_openai_v1`):
+
+| | Haiku 5.5 | gpt-4o-mini |
+|---|---|---|
+| Score | 98% (falla oth-06) | 98% (falla acc-05) |
+| Brier score | 0,0318 | 0,0342 |
+| Costo de la corrida (generación + moderador) | 0,016656 USD | **0,013202 USD** |
+| Latencia media por llamada | **1,33 s** | 1,61 s |
+| Latencia por ticket (mediana) | **3,88 s** | 4,75 s |
+| Respuestas reemplazadas por el guardrail de salida | 0 | 1 (bil-02: "podremos realizar la corrección") |
+
+Los dos aciertan lo mismo y fallan en un caso ambiguo distinto. gpt-4o-mini sale un ~21% más barato por
+corrida y es más lento. Con 40 casos y una corrida de cada uno, la diferencia de Brier no alcanza para
+decir que uno está mejor calibrado. Ataques (`2026-11-17_2205_adversarial_*`): con todas las capas, 0 de 20
+llegan al cliente, igual que con Haiku.
 
 **Los errores son casos ambiguos:**
 - `acc-05` ("¿Puedo tener dos sucursales en la misma cuenta con usuarios separados?"): Haiku lo clasificó como `other`, con los dos prompts.
@@ -391,10 +412,13 @@ $ python -m src.main "no me llega el mail para recuperar la contraseña" --provi
 
 ## Decisiones técnicas
 
-- **Proveedores: Anthropic (Haiku 5.5) y Groq (gpt-oss-120b).**
-  - La cuenta de OpenAI disponible no tenía créditos.
+- **Proveedores: Anthropic (Haiku 5.5), Groq (gpt-oss-120b) y OpenAI (gpt-4o-mini).**
+  - OpenAI se agregó el 17/11/2026, a pedido del feedback de la entrega (en la primera versión, la cuenta de
+    OpenAI no tenía créditos). Se eligió gpt-4o-mini porque no razona antes de responder: los modelos gpt-5
+    sí, y esos tokens de razonamiento eran los que cortaban el JSON (ver "Respuestas cortadas").
   - Groq tiene plan gratis y se usa con el SDK `openai` cambiando `base_url`.
-  - Los dos implementan la misma interfaz `LLMProvider.complete()`, así que agregar un proveedor no cambia la lógica de negocio.
+  - Los tres implementan la misma interfaz `LLMProvider.complete()`: agregar OpenAI no cambió la lógica de negocio.
+    Groq y OpenAI comparten la clase `OpenAICompatibleProvider` (mismo SDK, distinta URL y clave).
 - **Respuestas cortadas: no se subió `MAX_TOKENS`.**
   - Haiku 5.5 y gpt-oss razonan antes de responder, y esos tokens cuentan dentro del límite. Eso cortaba el JSON: 17 respuestas inválidas con exactamente 500 tokens.
   - Se usa salida estructurada (el esquema del contrato se le pasa al proveedor), `thinking` desactivado en Anthropic y `reasoning_effort=low` en Groq.
